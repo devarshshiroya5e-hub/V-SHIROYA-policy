@@ -1,20 +1,62 @@
-<div align="center">
-<img width="1200" height="475" alt="GHBanner" src="https://ai.google.dev/static/site-assets/images/share-ais-513315318.png" />
-</div>
+# V SHIROYA Policy AI
 
-# Run and deploy your AI Studio app
+Insurance policy document intelligence and audit application.
 
-This contains everything you need to run your app locally.
+## Features
 
-View your app in AI Studio: https://ai.studio/apps/d4756037-1df0-4ee5-8c0e-1fdb89643975
+- Upload PDF or policy images
+- Server-side OpenRouter AI analysis
+- Full-document OCR/extraction
+- Structured policy fields, confidence, missing/uncertain fields
+- Policy status calculation
+- Policy storage, statistics and audit log APIs
 
-## Run Locally
+## Local setup
 
-**Prerequisites:**  Node.js
+Prerequisites: Node.js 20+
 
+```bash
+npm install
+cp .env.example .env
+```
 
-1. Install dependencies:
-   `npm install`
-2. Set the `GEMINI_API_KEY` in [.env.local](.env.local) to your Gemini API key
-3. Run the app:
-   `npm run dev`
+Set a real `OPENROUTER_API_KEY` in `.env`.
+
+Optional configuration:
+
+- `OPENROUTER_MODELS` — comma-separated model fallback list
+- `OPENROUTER_PDF_ENGINE` — PDF processing engine
+- `APP_URL` — public application URL
+
+Run development mode:
+
+```bash
+npm run dev
+```
+
+Build and run production mode:
+
+```bash
+npm run build
+npm start
+```
+
+Health check: `GET /api/health`.
+
+Policy analysis: `POST /api/analyze-policy` with JSON fields `fileData`, `fileName`, `mimeType`, and optional `instruction`.
+
+## Render deployment
+
+Create a Render Web Service from this repository with:
+
+- Build command: `npm ci && npm run build`
+- Start command: `npm start`
+- Environment: Node
+- Environment variable: `OPENROUTER_API_KEY` (secret)
+- Optional: `OPENROUTER_MODELS`, `OPENROUTER_PDF_ENGINE`, `APP_URL`
+
+Do not commit `.env` or API keys. The included `.gitignore` excludes environment files except `.env.example`.
+
+## Verification
+
+After deployment, open `/api/health` and confirm `ok: true` and `configured: true`. Then upload a representative policy PDF from the UI and confirm structured extraction is returned.
