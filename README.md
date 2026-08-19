@@ -49,7 +49,7 @@ Policy analysis: `POST /api/analyze-policy` with JSON fields `fileData`, `fileNa
 
 Create a Render Web Service from this repository with:
 
-- Build command: `npm ci && npm run build`
+- Build command: `npm install && npm run build`
 - Start command: `npm start`
 - Environment: Node
 - Environment variable: `OPENROUTER_API_KEY` (secret)
