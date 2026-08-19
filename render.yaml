@@ -1,0 +1,16 @@
+services:
+  - type: web
+    name: v-shiroya-policy-ai
+    runtime: node
+    buildCommand: npm ci && npm run build
+    startCommand: npm start
+    healthCheckPath: /api/health
+    envVars:
+      - key: OPENROUTER_API_KEY
+        sync: false
+      - key: OPENROUTER_MODELS
+        value: google/gemini-2.5-flash
+      - key: OPENROUTER_PDF_ENGINE
+        value: mistral-ocr
+      - key: APP_URL
+        sync: false
