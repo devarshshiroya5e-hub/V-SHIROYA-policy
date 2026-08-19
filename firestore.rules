@@ -1,0 +1,44 @@
+rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // Helper functions
+    function isValidId(id) {
+      return id is string && id.size() <= 128;
+    }
+
+    // Insurance Policies Collection
+    match /policies/{policyId} {
+      // Allow reading all saved policy documents
+      allow read, list: if true;
+      
+      // Allow creating policy documents
+      allow create: if request.resource.data.keys().hasAll(['id', 'ownerName', 'policyNumber'])
+                    && request.resource.data.id is string
+                    && request.resource.data.ownerName is string;
+
+      // Allow updating existing policy documents
+      allow update: if request.resource.data.id == resource.data.id;
+
+      // Allow deleting policy documents
+      allow delete: if true;
+    }
+
+    // User Profiles
+    match /profiles/{userId} {
+      allow read, write: if true; // simplified for prototype
+    }
+
+    // Security Audit Logs
+    match /auditLogs/{logId} {
+      allow read, write: if true;
+    }
+
+    // Default Fallback
+    match /{document=**} {
+      allow read, write: if true;
+    }
+  }
+}
+

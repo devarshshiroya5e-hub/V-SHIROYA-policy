@@ -1,0 +1,87 @@
+{
+  "entities": {
+    "policies": {
+      "title": "Policies",
+      "description": "Uploaded insurance policies and extracted metadata",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "ownerName": { "type": "string" },
+        "policyNumber": { "type": "string" },
+        "providerCompany": { "type": "string" },
+        "policyType": { "type": "string" },
+        "category": { "type": "string" },
+        "startDate": { "type": "string" },
+        "endDate": { "type": "string" },
+        "premiumAmount": { "type": "number" },
+        "premiumFrequency": { "type": "string" },
+        "sumAssured": { "type": "number" },
+        "insuredPerson": { "type": "string" },
+        "nominee": { "type": "string" },
+        "nomineeRelationship": { "type": "string" },
+        "phoneNumber": { "type": "string" },
+        "email": { "type": "string" },
+        "address": { "type": "string" },
+        "dateOfBirth": { "type": "string" },
+        "agentName": { "type": "string" },
+        "agentPhone": { "type": "string" },
+        "branchName": { "type": "string" },
+        "paymentMode": { "type": "string" },
+        "policyStatus": { "type": "string" },
+        "maturityDate": { "type": "string" },
+        "documentUrl": { "type": "string" },
+        "originalFileName": { "type": "string" },
+        "fileSizeBytes": { "type": "number" },
+        "fileType": { "type": "string" },
+        "extractedText": { "type": "string" },
+        "aiConfidence": { "type": "number" },
+        "createdAt": { "type": "string" },
+        "updatedAt": { "type": "string" },
+        "userId": { "type": "string" }
+      },
+      "required": ["id", "ownerName", "policyNumber"]
+    },
+    "profiles": {
+      "title": "Accountant User Profiles",
+      "description": "User profile settings and accountant information",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "name": { "type": "string" },
+        "email": { "type": "string" },
+        "firmName": { "type": "string" },
+        "role": { "type": "string" },
+        "avatarUrl": { "type": "string" }
+      },
+      "required": ["id", "name", "email"]
+    },
+    "auditLogs": {
+      "title": "Security Audit Logs",
+      "description": "Compliance and audit event logs",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "timestamp": { "type": "string" },
+        "action": { "type": "string" },
+        "actor": { "type": "string" },
+        "details": { "type": "string" },
+        "ipAddress": { "type": "string" }
+      },
+      "required": ["id", "timestamp", "action"]
+    }
+  },
+  "firestore": {
+    "policies": {
+      "schema": "policies",
+      "description": "Collection of insurance policies and extracted details"
+    },
+    "profiles": {
+      "schema": "profiles",
+      "description": "Collection of user account profiles"
+    },
+    "auditLogs": {
+      "schema": "auditLogs",
+      "description": "Collection of system security audit logs"
+    }
+  }
+}
