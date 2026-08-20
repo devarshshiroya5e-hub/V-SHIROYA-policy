@@ -2,7 +2,6 @@ import express from "express";
 import path from "node:path";
 import fs from "node:fs";
 import dotenv from "dotenv";
-import { createServer as createViteServer } from "vite";
 
 dotenv.config();
 
@@ -231,33 +230,25 @@ app.get("/api/stats", (_req, res) => {
 
 app.get("/api/security/audit", (_req, res) => res.json({ success: true, logs: readJson<any[]>(AUDIT_FILE, []) }));
 
-async function startServer() {
-  const isProduction = process.env.NODE_ENV === "production" || fs.existsSync(DIST_INDEX);
-
-  if (isProduction) {
-    if (!fs.existsSync(DIST_INDEX)) {
-      throw new Error(`Production frontend is missing: ${DIST_INDEX}. Run npm run build first.`);
-    }
-    app.use(express.static(DIST, { index: "index.html", maxAge: "1h" }));
-    app.get("*", (_req, res) => res.sendFile(DIST_INDEX));
-    console.log(`Serving production frontend from ${DIST}`);
-  } else {
-    const vite = await createViteServer({
-      root: ROOT,
-      server: { middlewareMode: true },
-      appType: "spa",
-    });
-    app.use(vite.middlewares);
+function startServer() {
+  if (!fs.existsSync(DIST_INDEX)) {
+    throw new Error(`Production frontend is missing: ${DIST_INDEX}. Run npm run build first.`);
   }
+
+  app.use(express.static(DIST, { index: "index.html", maxAge: "1h" }));
+  app.get("*", (_req, res) => res.sendFile(DIST_INDEX));
 
   app.listen(PORT, "0.0.0.0", () => {
     console.log(`V Shiroya Policy AI listening on ${PORT}`);
     console.log(`Application root: ${ROOT}`);
-    console.log(`Frontend build: ${fs.existsSync(DIST_INDEX) ? "ready" : "not built"}`);
+    console.log("Frontend build: ready");
+    console.log(`OpenRouter configured: ${Boolean(getOpenRouterKey())}`);
   });
 }
 
-startServer().catch((error) => {
+try {
+  startServer();
+} catch (error) {
   console.error("Server startup failed:", error);
   process.exit(1);
-});
+}
