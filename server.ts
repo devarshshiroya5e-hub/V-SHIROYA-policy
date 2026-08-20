@@ -14,10 +14,38 @@ const DIST = path.join(ROOT, "dist");
 const DIST_INDEX = path.join(DIST, "index.html");
 const DATA_FILE = path.join(ROOT, "policies_db.json");
 const AUDIT_FILE = path.join(ROOT, "security_audit.json");
+const MAX_BODY = process.env.MAX_BODY_SIZE || "110mb";
 
 app.disable("x-powered-by");
-app.use(express.json({ limit: "100mb" }));
-app.use(express.urlencoded({ limit: "100mb", extended: true }));
+
+// Allow the same-origin Render frontend and an optional Firebase frontend to call this API.
+const allowedOrigins = new Set(
+  [
+    process.env.APP_URL,
+    process.env.FRONTEND_URL,
+    process.env.FIREBASE_APP_URL,
+    "https://v-shiroya-policy.onrender.com",
+    "http://localhost:3000",
+    "http://localhost:5173",
+  ]
+    .map((value) => value?.trim().replace(/\/$/, ""))
+    .filter(Boolean) as string[]
+);
+
+app.use((req, res, next) => {
+  const origin = String(req.headers.origin || "").replace(/\/$/, "");
+  if (!origin || allowedOrigins.has(origin)) {
+    if (origin) res.setHeader("Access-Control-Allow-Origin", origin);
+  }
+  res.setHeader("Vary", "Origin");
+  res.setHeader("Access-Control-Allow-Methods", "GET,POST,OPTIONS");
+  res.setHeader("Access-Control-Allow-Headers", "Content-Type, Authorization");
+  if (req.method === "OPTIONS") return res.sendStatus(204);
+  next();
+});
+
+app.use(express.json({ limit: MAX_BODY }));
+app.use(express.urlencoded({ limit: MAX_BODY, extended: true }));
 
 function readJson<T>(file: string, fallback: T): T {
   try {
@@ -29,7 +57,11 @@ function readJson<T>(file: string, fallback: T): T {
 }
 
 function writeJson(file: string, value: unknown) {
-  fs.writeFileSync(file, JSON.stringify(value, null, 2), "utf8");
+  try {
+    fs.writeFileSync(file, JSON.stringify(value, null, 2), "utf8");
+  } catch (error) {
+    console.error(`Failed to write ${file}:`, error);
+  }
 }
 
 function addAuditLog(action: string, details: string, req: express.Request) {
@@ -102,7 +134,7 @@ async function callOpenRouter(fileData: string, fileName: string, mimeType: stri
         headers: {
           Authorization: `Bearer ${key}`,
           "Content-Type": "application/json",
-          "HTTP-Referer": process.env.APP_URL || "http://localhost:3000",
+          "HTTP-Referer": process.env.APP_URL || "https://v-shiroya-policy.onrender.com",
           "X-Title": "V Shiroya Policy AI",
         },
         body: JSON.stringify({
@@ -172,6 +204,7 @@ app.get("/api/health", (_req, res) => res.json({
   configured: Boolean(getOpenRouterKey()),
   models: modelsToTry(),
   productionBuild: fs.existsSync(DIST_INDEX),
+  frontendUrl: process.env.FRONTEND_URL || process.env.FIREBASE_APP_URL || "same-origin",
   timestamp: new Date().toISOString(),
 }));
 
@@ -241,8 +274,9 @@ function startServer() {
   app.listen(PORT, "0.0.0.0", () => {
     console.log(`V Shiroya Policy AI listening on ${PORT}`);
     console.log(`Application root: ${ROOT}`);
-    console.log("Frontend build: ready");
+    console.log(`Frontend build: ${DIST_INDEX}`);
     console.log(`OpenRouter configured: ${Boolean(getOpenRouterKey())}`);
+    console.log(`Allowed frontend origins: ${[...allowedOrigins].join(", ") || "same-origin only"}`);
   });
 }
 
