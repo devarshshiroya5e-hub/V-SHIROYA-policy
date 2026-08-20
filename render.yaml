@@ -2,7 +2,7 @@ services:
   - type: web
     name: v-shiroya-policy-ai
     runtime: node
-    buildCommand: npm install && npm run build
+    buildCommand: npm install --no-audit --no-fund && npm run build
     startCommand: npm start
     healthCheckPath: /api/health
     envVars:
