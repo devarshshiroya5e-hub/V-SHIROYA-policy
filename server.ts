@@ -97,9 +97,19 @@ function getOpenRouterKey() {
   return key && !key.startsWith("MY_") ? key : null;
 }
 
+// IMPORTANT: this application is intentionally free-only.
+// By default every AI request goes through OpenRouter's free router.
+// Paid models cannot be selected accidentally through an old Render env var.
 function modelsToTry() {
-  return [...new Set((process.env.OPENROUTER_MODELS || process.env.OPENROUTER_MODEL || "google/gemini-2.5-flash")
-    .split(",").map((value) => value.trim()).filter(Boolean))];
+  const allowPaid = process.env.OPENROUTER_ALLOW_PAID === "true";
+  if (!allowPaid) return ["openrouter/free"];
+
+  const configured = (process.env.OPENROUTER_MODELS || process.env.OPENROUTER_MODEL || "openrouter/free")
+    .split(",")
+    .map((value) => value.trim())
+    .filter(Boolean);
+  return [...new Set(configured.length ? configured : ["openrouter/free"])]
+    .filter((model) => model === "openrouter/free" || model.endsWith(":free"));
 }
 
 const SCHEMA = `{"documentType":string,"detectedInsurer":string|null,"ownerName":string|null,"policyNumber":string|null,"providerCompany":string|null,"policyType":string|null,"startDate":string|null,"endDate":string|null,"premiumAmount":number|null,"premiumFrequency":string|null,"sumAssured":number|null,"insuredPerson":string|null,"nominee":string|null,"nomineeRelationship":string|null,"phoneNumber":string|null,"email":string|null,"address":string|null,"dateOfBirth":string|null,"agentName":string|null,"agentPhone":string|null,"branchName":string|null,"paymentMode":string|null,"policyStatus":"ACTIVE"|"EXPIRING SOON"|"EXPIRED","maturityDate":string|null,"additionalDetails":[{"label":string,"value":string,"confidence":"high"|"medium"|"low"}],"missingFields":string[],"uncertainFields":string[],"confidence":number,"extractedText":string,"fieldConfidenceMap":object}`;
@@ -115,6 +125,7 @@ function buildContent(fileData: string, fileName: string, mimeType: string, inst
     text: `${instruction || "Extract and audit this insurance policy comprehensively."}\nFilename: ${fileName}\nReturn the complete JSON object now.`,
   }];
   if (mimeType.toLowerCase() === "application/pdf") {
+    // OpenRouter supports PDF file input directly. No paid OCR plugin is forced here.
     parts.push({ type: "file", file: { filename: fileName || "policy.pdf", file_data: dataUrl } });
   } else {
     parts.push({ type: "image_url", image_url: { url: dataUrl } });
@@ -145,15 +156,12 @@ async function callOpenRouter(fileData: string, fileName: string, mimeType: stri
           ],
           response_format: { type: "json_object" },
           temperature: 0.1,
-          plugins: mimeType.toLowerCase() === "application/pdf"
-            ? [{ id: "file-parser", pdf: { engine: process.env.OPENROUTER_PDF_ENGINE || "mistral-ocr" } }]
-            : undefined,
         }),
       });
       const data: any = await response.json();
       if (!response.ok) {
         lastError = data?.error?.message || `OpenRouter HTTP ${response.status}`;
-        console.warn(`OpenRouter model ${model} failed: ${lastError}`);
+        console.warn(`OpenRouter free model ${model} failed: ${lastError}`);
         continue;
       }
       const content = data?.choices?.[0]?.message?.content;
@@ -161,7 +169,7 @@ async function callOpenRouter(fileData: string, fileName: string, mimeType: stri
         lastError = "OpenRouter returned no assistant content";
         continue;
       }
-      return { result: cleanJson(content), model, usage: data.usage || null };
+      return { result: cleanJson(content), model: data?.model || model, usage: data.usage || null };
     } catch (error: any) {
       lastError = error?.message || String(error);
       console.warn(`OpenRouter request failed for ${model}: ${lastError}`);
@@ -202,6 +210,7 @@ app.get("/api/health", (_req, res) => res.json({
   service: "V Shiroya Policy AI",
   aiProvider: "OpenRouter",
   configured: Boolean(getOpenRouterKey()),
+  freeOnly: process.env.OPENROUTER_ALLOW_PAID !== "true",
   models: modelsToTry(),
   productionBuild: fs.existsSync(DIST_INDEX),
   frontendUrl: process.env.FRONTEND_URL || process.env.FIREBASE_APP_URL || "same-origin",
@@ -276,6 +285,8 @@ function startServer() {
     console.log(`Application root: ${ROOT}`);
     console.log(`Frontend build: ${DIST_INDEX}`);
     console.log(`OpenRouter configured: ${Boolean(getOpenRouterKey())}`);
+    console.log(`OpenRouter mode: ${process.env.OPENROUTER_ALLOW_PAID === "true" ? "paid allowed" : "FREE ONLY"}`);
+    console.log(`Models: ${modelsToTry().join(", ")}`);
     console.log(`Allowed frontend origins: ${[...allowedOrigins].join(", ") || "same-origin only"}`);
   });
 }
