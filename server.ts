@@ -15,31 +15,40 @@ const DIST_INDEX = path.join(DIST, "index.html");
 const DATA_FILE = path.join(ROOT, "policies_db.json");
 const AUDIT_FILE = path.join(ROOT, "security_audit.json");
 const MAX_BODY = process.env.MAX_BODY_SIZE || "110mb";
+const MAX_FILE_BYTES = Number(process.env.MAX_FILE_BYTES || 100 * 1024 * 1024);
 
 app.disable("x-powered-by");
 
+const normalizeOrigin = (value?: string) => String(value || "").trim().replace(/\/$/, "");
 const allowedOrigins = new Set(
   [
     process.env.APP_URL,
     process.env.FRONTEND_URL,
     process.env.FIREBASE_APP_URL,
+    "https://v-shiroya-insurance.web.app",
+    "https://v-shiroya-insurance.firebaseapp.com",
+    "https://v-shiroya-policy.web.app",
+    "https://v-shiroya-policy.firebaseapp.com",
     "https://v-shiroya-policy.onrender.com",
     "http://localhost:3000",
     "http://localhost:5173",
-  ]
-    .map((value) => value?.trim().replace(/\/$/, ""))
-    .filter(Boolean) as string[]
+  ].map(normalizeOrigin).filter(Boolean)
 );
 
 app.use((req, res, next) => {
-  const origin = String(req.headers.origin || "").replace(/\/$/, "");
-  if (!origin || allowedOrigins.has(origin)) {
-    if (origin) res.setHeader("Access-Control-Allow-Origin", origin);
-  }
+  const origin = normalizeOrigin(req.headers.origin);
+  const allowed = !origin || allowedOrigins.has(origin);
+
+  // Always attach CORS headers before returning an error so the browser can read it.
+  if (origin && allowed) res.setHeader("Access-Control-Allow-Origin", origin);
   res.setHeader("Vary", "Origin");
   res.setHeader("Access-Control-Allow-Methods", "GET,POST,OPTIONS");
   res.setHeader("Access-Control-Allow-Headers", "Content-Type, Authorization");
-  if (req.method === "OPTIONS") return res.sendStatus(204);
+  res.setHeader("Access-Control-Max-Age", "86400");
+
+  if (req.method === "OPTIONS") {
+    return allowed ? res.status(204).end() : res.status(403).json({ error: "CORS origin not allowed" });
+  }
   next();
 });
 
@@ -77,10 +86,6 @@ function cleanJson(text: string): any {
   }
 }
 
-// Six server-side keys are supported. Never expose these to the browser.
-// The first key is the primary key. Backup keys are used only for key-specific
-// authentication failures or transient upstream/network failures. A 429/quota
-// response is NOT rotated around, so this does not bypass an OpenRouter rate limit.
 function getOpenRouterKeys() {
   const names = [
     "OPENROUTER_API_KEY",
@@ -96,11 +101,10 @@ function getOpenRouterKeys() {
 
 function modelsToTry() {
   const allowPaid = process.env.OPENROUTER_ALLOW_PAID === "true";
-  if (!allowPaid) return ["openrouter/free"];
   const configured = (process.env.OPENROUTER_MODELS || process.env.OPENROUTER_MODEL || "openrouter/free")
     .split(",").map((value) => value.trim()).filter(Boolean);
-  return [...new Set(configured.length ? configured : ["openrouter/free"])]
-    .filter((model) => model === "openrouter/free" || model.endsWith(":free"));
+  const models = [...new Set(configured.length ? configured : ["openrouter/free"])];
+  return allowPaid ? models : models.filter((model) => model === "openrouter/free" || model.endsWith(":free"));
 }
 
 const SCHEMA = `{"documentType":string,"detectedInsurer":string|null,"ownerName":string|null,"policyNumber":string|null,"providerCompany":string|null,"policyType":string|null,"startDate":string|null,"endDate":string|null,"premiumAmount":number|null,"premiumFrequency":string|null,"sumAssured":number|null,"insuredPerson":string|null,"nominee":string|null,"nomineeRelationship":string|null,"phoneNumber":string|null,"email":string|null,"address":string|null,"dateOfBirth":string|null,"agentName":string|null,"agentPhone":string|null,"branchName":string|null,"paymentMode":string|null,"policyStatus":"ACTIVE"|"EXPIRING SOON"|"EXPIRED","maturityDate":string|null,"additionalDetails":[{"label":string,"value":string,"confidence":"high"|"medium"|"low"}],"missingFields":string[],"uncertainFields":string[],"confidence":number,"extractedText":string,"fieldConfidenceMap":object}`;
@@ -109,8 +113,11 @@ const SYSTEM_PROMPT = `You are V Shiroya Policy AI, a professional insurance-pol
 function buildContent(fileData: string, fileName: string, mimeType: string, instruction: string) {
   const dataUrl = fileData.startsWith("data:") ? fileData : `data:${mimeType};base64,${fileData.replace(/^data:[^,]+,/, "")}`;
   const parts: any[] = [{ type: "text", text: `${instruction || "Extract and audit this insurance policy comprehensively."}\nFilename: ${fileName}\nReturn the complete JSON object now.` }];
-  if (mimeType.toLowerCase() === "application/pdf") parts.push({ type: "file", file: { filename: fileName || "policy.pdf", file_data: dataUrl } });
-  else parts.push({ type: "image_url", image_url: { url: dataUrl } });
+  if (mimeType.toLowerCase() === "application/pdf") {
+    parts.push({ type: "file", file: { filename: fileName || "policy.pdf", file_data: dataUrl } });
+  } else {
+    parts.push({ type: "image_url", image_url: { url: dataUrl } });
+  }
   return parts;
 }
 
@@ -118,14 +125,32 @@ function isSafeFailoverStatus(status: number) {
   return status === 401 || status === 403 || status === 408 || status === 502 || status === 503 || status === 504;
 }
 
+function buildOpenRouterPayload(model: string, fileData: string, fileName: string, mimeType: string, instruction: string) {
+  const isPdf = mimeType.toLowerCase() === "application/pdf";
+  return {
+    model,
+    messages: [
+      { role: "system", content: SYSTEM_PROMPT },
+      { role: "user", content: buildContent(fileData, fileName, mimeType, instruction) },
+    ],
+    // Explicitly use the free Cloudflare parser for PDFs. Without this, OpenRouter
+    // can default to a paid OCR parser even when the selected model is free.
+    ...(isPdf ? { plugins: [{ id: "file-parser", pdf: { engine: process.env.OPENROUTER_PDF_ENGINE || "cloudflare-ai" } }] } : {}),
+    response_format: { type: "json_object" },
+    temperature: 0.1,
+  };
+}
+
 async function callOpenRouter(fileData: string, fileName: string, mimeType: string, instruction: string) {
   const keys = getOpenRouterKeys();
   if (!keys.length) throw new Error("No OPENROUTER_API_KEY variables are configured.");
+  const models = modelsToTry();
+  if (!models.length) throw new Error("No allowed OpenRouter models are configured.");
+
   let lastError = "Unknown OpenRouter error";
 
-  for (let keyIndex = 0; keyIndex < keys.length; keyIndex++) {
-    const key = keys[keyIndex];
-    for (const model of modelsToTry()) {
+  for (const key of keys) {
+    for (const model of models) {
       try {
         const response = await fetch("https://openrouter.ai/api/v1/chat/completions", {
           method: "POST",
@@ -133,30 +158,27 @@ async function callOpenRouter(fileData: string, fileName: string, mimeType: stri
             Authorization: `Bearer ${key.value}`,
             "Content-Type": "application/json",
             "HTTP-Referer": process.env.APP_URL || "https://v-shiroya-policy.onrender.com",
-            "X-Title": "V Shiroya Policy AI",
+            "X-OpenRouter-Title": "V Shiroya Policy AI",
           },
-          body: JSON.stringify({
-            model,
-            messages: [
-              { role: "system", content: SYSTEM_PROMPT },
-              { role: "user", content: buildContent(fileData, fileName, mimeType, instruction) },
-            ],
-            response_format: { type: "json_object" },
-            temperature: 0.1,
-          }),
+          body: JSON.stringify(buildOpenRouterPayload(model, fileData, fileName, mimeType, instruction)),
         });
+
         const data: any = await response.json().catch(() => ({}));
         if (!response.ok) {
-          lastError = data?.error?.message || `OpenRouter HTTP ${response.status}`;
-          // Do not rotate keys for 429: that would be quota/rate-limit bypassing.
+          lastError = data?.error?.message || data?.message || `OpenRouter HTTP ${response.status}`;
           if (response.status === 429) throw new Error(`OpenRouter rate limit reached: ${lastError}`);
           if (!isSafeFailoverStatus(response.status)) throw new Error(lastError);
-          console.warn(`${key.name} failed (${response.status}); trying the next configured key.`);
+          console.warn(`${key.name} failed (${response.status}) on ${model}; trying the next configured option.`);
           continue;
         }
+
         const content = data?.choices?.[0]?.message?.content;
-        if (!content) { lastError = "OpenRouter returned no assistant content"; continue; }
-        return { result: cleanJson(content), model: data?.model || model, usage: data.usage || null, keyName: key.name };
+        if (!content) {
+          lastError = "OpenRouter returned no assistant content";
+          continue;
+        }
+
+        return { result: cleanJson(content), model: data?.model || model, usage: data.usage || null };
       } catch (error: any) {
         lastError = error?.message || String(error);
         if (/rate limit reached/i.test(lastError)) throw error;
@@ -165,6 +187,7 @@ async function callOpenRouter(fileData: string, fileName: string, mimeType: stri
       }
     }
   }
+
   throw new Error(lastError);
 }
 
@@ -202,6 +225,8 @@ app.get("/api/health", (_req, res) => res.json({
   configuredKeyCount: getOpenRouterKeys().length,
   freeOnly: process.env.OPENROUTER_ALLOW_PAID !== "true",
   models: modelsToTry(),
+  pdfEngine: process.env.OPENROUTER_PDF_ENGINE || "cloudflare-ai",
+  allowedOrigins: [...allowedOrigins],
   productionBuild: fs.existsSync(DIST_INDEX),
   frontendUrl: process.env.FRONTEND_URL || process.env.FIREBASE_APP_URL || "same-origin",
   timestamp: new Date().toISOString(),
@@ -211,6 +236,13 @@ async function analyzeOne(payload: any, req: express.Request) {
   const { fileData, fileName, mimeType = "application/pdf", instruction = "" } = payload || {};
   if (!fileName) throw new Error("Filename is required");
   if (!fileData) throw new Error("File data is required");
+  if (!String(mimeType).startsWith("application/pdf") && !String(mimeType).startsWith("image/")) {
+    throw new Error("Unsupported file type. Use PDF, PNG, JPG or WEBP.");
+  }
+  const base64 = String(fileData).replace(/^data:[^,]+,/, "");
+  const estimatedBytes = Math.floor((base64.length * 3) / 4);
+  if (estimatedBytes > MAX_FILE_BYTES) throw new Error(`File is larger than the ${Math.floor(MAX_FILE_BYTES / 1024 / 1024)} MB server limit.`);
+
   const analysis = await callOpenRouter(fileData, fileName, mimeType, instruction);
   const extraction = postProcess(analysis.result);
   addAuditLog("POLICY_ANALYSIS", `Analyzed ${fileName} with ${analysis.model}`, req);
@@ -218,13 +250,19 @@ async function analyzeOne(payload: any, req: express.Request) {
 }
 
 app.post("/api/analyze-policy", async (req, res) => {
-  if (!getOpenRouterKeys().length) return res.status(503).json({ error: "AI is not configured", details: "Set OPENROUTER_API_KEY through OPENROUTER_API_KEY_5 on the server." });
-  try { return res.json(await analyzeOne(req.body, req)); }
-  catch (error: any) { console.error("AI analysis failed:", error); return res.status(/rate limit/i.test(error?.message || "") ? 429 : 502).json({ error: "AI analysis failed", details: error?.message || "Unknown AI error" }); }
+  if (!getOpenRouterKeys().length) {
+    return res.status(503).json({ error: "AI is not configured", details: "Set OPENROUTER_API_KEY through OPENROUTER_API_KEY_5 in Render environment variables, then redeploy." });
+  }
+  try {
+    return res.json(await analyzeOne(req.body, req));
+  } catch (error: any) {
+    const message = error?.message || "Unknown AI error";
+    console.error("AI analysis failed:", message);
+    const status = /rate limit/i.test(message) ? 429 : /Unsupported file type|Filename is required|File data is required|server limit/i.test(message) ? 400 : 502;
+    return res.status(status).json({ error: "AI analysis failed", details: message });
+  }
 });
 
-// Bulk endpoint always returns one item per submitted file, including an error item.
-// The browser can also use individual requests; this endpoint is useful for API clients.
 app.post("/api/analyze-policies", async (req, res) => {
   const files = Array.isArray(req.body?.files) ? req.body.files : [];
   if (!files.length) return res.status(400).json({ error: "files must be a non-empty array" });
@@ -246,7 +284,8 @@ app.get("/api/policies", (req, res) => {
 app.post("/api/policies", (req, res) => {
   const policies = readJson<any[]>(DATA_FILE, []);
   const policy = { ...req.body, id: req.body?.id || `pol-${Date.now()}`, createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() };
-  policies.unshift(policy); writeJson(DATA_FILE, policies);
+  policies.unshift(policy);
+  writeJson(DATA_FILE, policies);
   addAuditLog("POLICY_CREATED", `Saved policy ${policy.policyNumber || policy.id}`, req);
   res.json({ success: true, policy });
 });
@@ -255,7 +294,14 @@ app.get("/api/stats", (_req, res) => {
   const policies = readJson<any[]>(DATA_FILE, []);
   res.json({ totalPolicies: policies.length, activePolicies: policies.filter((x) => x.policyStatus === "ACTIVE").length, expiredPolicies: policies.filter((x) => x.policyStatus === "EXPIRED").length, expiringSoonPolicies: policies.filter((x) => x.policyStatus === "EXPIRING SOON").length, totalPremiumValue: policies.reduce((sum, x) => sum + (Number(x.premiumAmount) || 0), 0) });
 });
+
 app.get("/api/security/audit", (_req, res) => res.json({ success: true, logs: readJson<any[]>(AUDIT_FILE, []) }));
+
+app.use((error: any, _req: express.Request, res: express.Response, _next: express.NextFunction) => {
+  console.error("Unhandled request error:", error);
+  if (error?.type === "entity.too.large") return res.status(413).json({ error: "Request is too large", details: `Maximum request size is ${MAX_BODY}.` });
+  return res.status(500).json({ error: "Server error", details: error?.message || "Unexpected server error" });
+});
 
 function startServer() {
   if (!fs.existsSync(DIST_INDEX)) throw new Error(`Production frontend is missing: ${DIST_INDEX}. Run npm run build first.`);
@@ -268,6 +314,7 @@ function startServer() {
     console.log(`OpenRouter keys configured: ${getOpenRouterKeys().length}`);
     console.log(`OpenRouter mode: ${process.env.OPENROUTER_ALLOW_PAID === "true" ? "paid allowed" : "FREE ONLY"}`);
     console.log(`Models: ${modelsToTry().join(", ")}`);
+    console.log(`PDF engine: ${process.env.OPENROUTER_PDF_ENGINE || "cloudflare-ai"}`);
   });
 }
 
