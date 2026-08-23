@@ -20,6 +20,7 @@ const MAX_FILE_BYTES = Number(process.env.MAX_FILE_BYTES || 100 * 1024 * 1024);
 app.disable("x-powered-by");
 
 const normalizeOrigin = (value?: string) => String(value || "").trim().replace(/\/$/, "");
+const CORS_ALLOW_ALL = process.env.CORS_ALLOW_ALL !== "false";
 const allowedOrigins = new Set(
   [
     process.env.APP_URL,
@@ -35,15 +36,22 @@ const allowedOrigins = new Set(
   ].map(normalizeOrigin).filter(Boolean)
 );
 
+// Public API: always send CORS headers before every route, including /api/stats,
+// errors and OPTIONS responses. No cookie credentials are used, so wildcard CORS
+// is safe for this stateless API and prevents Render/Firebase origin mismatches.
 app.use((req, res, next) => {
   const origin = normalizeOrigin(req.headers.origin);
-  const allowed = !origin || allowedOrigins.has(origin);
+  const allowed = CORS_ALLOW_ALL || !origin || allowedOrigins.has(origin);
 
-  // Always attach CORS headers before returning an error so the browser can read it.
-  if (origin && allowed) res.setHeader("Access-Control-Allow-Origin", origin);
-  res.setHeader("Vary", "Origin");
+  if (CORS_ALLOW_ALL) {
+    res.setHeader("Access-Control-Allow-Origin", "*");
+  } else if (origin && allowed) {
+    res.setHeader("Access-Control-Allow-Origin", origin);
+    res.append("Vary", "Origin");
+  }
+
   res.setHeader("Access-Control-Allow-Methods", "GET,POST,OPTIONS");
-  res.setHeader("Access-Control-Allow-Headers", "Content-Type, Authorization");
+  res.setHeader("Access-Control-Allow-Headers", "Content-Type, Authorization, X-Requested-With");
   res.setHeader("Access-Control-Max-Age", "86400");
 
   if (req.method === "OPTIONS") {
@@ -133,8 +141,6 @@ function buildOpenRouterPayload(model: string, fileData: string, fileName: strin
       { role: "system", content: SYSTEM_PROMPT },
       { role: "user", content: buildContent(fileData, fileName, mimeType, instruction) },
     ],
-    // Explicitly use the free Cloudflare parser for PDFs. Without this, OpenRouter
-    // can default to a paid OCR parser even when the selected model is free.
     ...(isPdf ? { plugins: [{ id: "file-parser", pdf: { engine: process.env.OPENROUTER_PDF_ENGINE || "cloudflare-ai" } }] } : {}),
     response_format: { type: "json_object" },
     temperature: 0.1,
@@ -148,7 +154,6 @@ async function callOpenRouter(fileData: string, fileName: string, mimeType: stri
   if (!models.length) throw new Error("No allowed OpenRouter models are configured.");
 
   let lastError = "Unknown OpenRouter error";
-
   for (const key of keys) {
     for (const model of models) {
       try {
@@ -173,11 +178,7 @@ async function callOpenRouter(fileData: string, fileName: string, mimeType: stri
         }
 
         const content = data?.choices?.[0]?.message?.content;
-        if (!content) {
-          lastError = "OpenRouter returned no assistant content";
-          continue;
-        }
-
+        if (!content) { lastError = "OpenRouter returned no assistant content"; continue; }
         return { result: cleanJson(content), model: data?.model || model, usage: data.usage || null };
       } catch (error: any) {
         lastError = error?.message || String(error);
@@ -187,7 +188,6 @@ async function callOpenRouter(fileData: string, fileName: string, mimeType: stri
       }
     }
   }
-
   throw new Error(lastError);
 }
 
@@ -226,6 +226,7 @@ app.get("/api/health", (_req, res) => res.json({
   freeOnly: process.env.OPENROUTER_ALLOW_PAID !== "true",
   models: modelsToTry(),
   pdfEngine: process.env.OPENROUTER_PDF_ENGINE || "cloudflare-ai",
+  corsAllowAll: CORS_ALLOW_ALL,
   allowedOrigins: [...allowedOrigins],
   productionBuild: fs.existsSync(DIST_INDEX),
   frontendUrl: process.env.FRONTEND_URL || process.env.FIREBASE_APP_URL || "same-origin",
@@ -236,9 +237,7 @@ async function analyzeOne(payload: any, req: express.Request) {
   const { fileData, fileName, mimeType = "application/pdf", instruction = "" } = payload || {};
   if (!fileName) throw new Error("Filename is required");
   if (!fileData) throw new Error("File data is required");
-  if (!String(mimeType).startsWith("application/pdf") && !String(mimeType).startsWith("image/")) {
-    throw new Error("Unsupported file type. Use PDF, PNG, JPG or WEBP.");
-  }
+  if (!String(mimeType).startsWith("application/pdf") && !String(mimeType).startsWith("image/")) throw new Error("Unsupported file type. Use PDF, PNG, JPG or WEBP.");
   const base64 = String(fileData).replace(/^data:[^,]+,/, "");
   const estimatedBytes = Math.floor((base64.length * 3) / 4);
   if (estimatedBytes > MAX_FILE_BYTES) throw new Error(`File is larger than the ${Math.floor(MAX_FILE_BYTES / 1024 / 1024)} MB server limit.`);
@@ -250,12 +249,9 @@ async function analyzeOne(payload: any, req: express.Request) {
 }
 
 app.post("/api/analyze-policy", async (req, res) => {
-  if (!getOpenRouterKeys().length) {
-    return res.status(503).json({ error: "AI is not configured", details: "Set OPENROUTER_API_KEY through OPENROUTER_API_KEY_5 in Render environment variables, then redeploy." });
-  }
-  try {
-    return res.json(await analyzeOne(req.body, req));
-  } catch (error: any) {
+  if (!getOpenRouterKeys().length) return res.status(503).json({ error: "AI is not configured", details: "Set OPENROUTER_API_KEY through OPENROUTER_API_KEY_5 in Render environment variables, then redeploy." });
+  try { return res.json(await analyzeOne(req.body, req)); }
+  catch (error: any) {
     const message = error?.message || "Unknown AI error";
     console.error("AI analysis failed:", message);
     const status = /rate limit/i.test(message) ? 429 : /Unsupported file type|Filename is required|File data is required|server limit/i.test(message) ? 400 : 502;
@@ -315,6 +311,7 @@ function startServer() {
     console.log(`OpenRouter mode: ${process.env.OPENROUTER_ALLOW_PAID === "true" ? "paid allowed" : "FREE ONLY"}`);
     console.log(`Models: ${modelsToTry().join(", ")}`);
     console.log(`PDF engine: ${process.env.OPENROUTER_PDF_ENGINE || "cloudflare-ai"}`);
+    console.log(`CORS mode: ${CORS_ALLOW_ALL ? "allow all origins" : "whitelist"}`);
   });
 }
 
