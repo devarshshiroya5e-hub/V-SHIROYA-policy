@@ -8,9 +8,15 @@ services:
     envVars:
       - key: OPENROUTER_API_KEY
         sync: false
+      - key: OPENROUTER_ALLOW_PAID
+        value: "true"
       - key: OPENROUTER_MODELS
-        value: google/gemini-2.5-flash
+        value: google/gemini-2.5-flash-lite:nitro
+      - key: OPENROUTER_FAST_MODE
+        value: "true"
+      - key: OPENROUTER_USE_PDF_PLUGIN
+        value: "false"
       - key: OPENROUTER_PDF_ENGINE
-        value: mistral-ocr
+        value: "native"
       - key: APP_URL
         sync: false
