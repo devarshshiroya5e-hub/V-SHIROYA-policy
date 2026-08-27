@@ -6,17 +6,35 @@ services:
     startCommand: npm start
     healthCheckPath: /api/health
     envVars:
+      - key: NVIDIA_API_KEY
+        sync: false
+      - key: NVIDIA_MODEL
+        value: nvidia/nemotron-3-nano-omni-30b-a3b-reasoning
+      - key: NVIDIA_PAGE_CONCURRENCY
+        value: "2"
+      - key: NVIDIA_PDF_SCALE
+        value: "1.35"
+      - key: NVIDIA_PAGE_TEXT_LIMIT
+        value: "18000"
+      - key: NVIDIA_FINAL_TEXT_LIMIT
+        value: "180000"
+      - key: NVIDIA_OCR_MAX_TOKENS
+        value: "4096"
+      - key: NVIDIA_MAX_TOKENS
+        value: "6000"
+      - key: NVIDIA_TIMEOUT_MS
+        value: "90000"
+      - key: NVIDIA_MAX_RETRIES
+        value: "3"
       - key: OPENROUTER_API_KEY
         sync: false
       - key: OPENROUTER_ALLOW_PAID
-        value: "true"
+        value: "false"
       - key: OPENROUTER_MODELS
-        value: google/gemini-2.5-flash-lite:nitro
+        value: openrouter/free
       - key: OPENROUTER_FAST_MODE
         value: "true"
       - key: OPENROUTER_USE_PDF_PLUGIN
         value: "false"
-      - key: OPENROUTER_PDF_ENGINE
-        value: "native"
       - key: APP_URL
         sync: false
