@@ -15,12 +15,18 @@ const MAX_RETRIES = Math.max(0, Math.min(5, Number(process.env.NVIDIA_MAX_RETRIE
 
 const originalCreateServer = http.createServer;
 http.createServer = function (...args: any[]) {
-  const server = originalCreateServer.apply(http, args as any);
+  const server = originalCreateServer.apply(http, args as any[]);
   server.keepAliveTimeout = 120_000;
   server.headersTimeout = 125_000;
   server.requestTimeout = 120_000;
   return server;
 } as typeof http.createServer;
+
+// server.ts still contains its legacy OpenRouter routing/validation. A placeholder
+// lets the NVIDIA bridge take over PDF requests without requiring an OpenRouter secret.
+if (process.env.NVIDIA_API_KEY && !process.env.OPENROUTER_API_KEY) {
+  process.env.OPENROUTER_API_KEY = "nvidia-pdf-bridge-placeholder";
+}
 
 const nativeFetch = globalThis.fetch.bind(globalThis);
 let active = 0;
