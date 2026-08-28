@@ -5,25 +5,25 @@ import http from "node:http";
 const NVIDIA_URL = "https://integrate.api.nvidia.com/v1/chat/completions";
 const NVIDIA_MODEL = process.env.NVIDIA_MODEL || "nvidia/nemotron-3-nano-omni-30b-a3b-reasoning";
 const PAGE_CONCURRENCY = Math.max(1, Math.min(3, Number(process.env.NVIDIA_PAGE_CONCURRENCY || 2)));
-const PAGE_SCALE = Math.max(1, Math.min(2, Number(process.env.NVIDIA_PDF_SCALE || 1.35)));
-const PAGE_TEXT_LIMIT = Math.max(2000, Number(process.env.NVIDIA_PAGE_TEXT_LIMIT || 18000));
-const FINAL_TEXT_LIMIT = Math.max(20000, Number(process.env.NVIDIA_FINAL_TEXT_LIMIT || 180000));
-const OCR_MAX_TOKENS = Math.max(1024, Math.min(8192, Number(process.env.NVIDIA_OCR_MAX_TOKENS || 4096)));
-const FINAL_MAX_TOKENS = Math.max(2048, Math.min(16384, Number(process.env.NVIDIA_MAX_TOKENS || 6000)));
-const REQUEST_TIMEOUT = Math.max(30000, Number(process.env.NVIDIA_TIMEOUT_MS || 90000));
+// 150 DPI is the NVIDIA document example and is materially clearer than the old 1.35x (~97 DPI) render.
+const PAGE_SCALE = Math.max(1.5, Math.min(4.17, Number(process.env.NVIDIA_PDF_SCALE || 2.0833)));
+const PAGE_TEXT_LIMIT = Math.max(4000, Number(process.env.NVIDIA_PAGE_TEXT_LIMIT || 30000));
+const FINAL_TEXT_LIMIT = Math.max(50000, Number(process.env.NVIDIA_FINAL_TEXT_LIMIT || 700000));
+const OCR_MAX_TOKENS = Math.max(2048, Math.min(16384, Number(process.env.NVIDIA_OCR_MAX_TOKENS || 8192)));
+const FINAL_MAX_TOKENS = Math.max(4096, Math.min(16384, Number(process.env.NVIDIA_MAX_TOKENS || 10000)));
+const REQUEST_TIMEOUT = Math.max(30000, Number(process.env.NVIDIA_TIMEOUT_MS || 120000));
 const MAX_RETRIES = Math.max(0, Math.min(5, Number(process.env.NVIDIA_MAX_RETRIES || 3)));
+const OCR_TEXT_THRESHOLD = Math.max(100, Number(process.env.NVIDIA_OCR_TEXT_THRESHOLD || 500));
 
 const originalCreateServer = http.createServer;
 http.createServer = function (...args: any[]) {
   const server = originalCreateServer.apply(http, args as any[]);
-  server.keepAliveTimeout = 120_000;
-  server.headersTimeout = 125_000;
-  server.requestTimeout = 120_000;
+  server.keepAliveTimeout = 180_000;
+  server.headersTimeout = 185_000;
+  server.requestTimeout = 180_000;
   return server;
 } as typeof http.createServer;
 
-// server.ts still contains its legacy OpenRouter routing/validation. A placeholder
-// lets the NVIDIA bridge take over PDF requests without requiring an OpenRouter secret.
 if (process.env.NVIDIA_API_KEY && !process.env.OPENROUTER_API_KEY) {
   process.env.OPENROUTER_API_KEY = "nvidia-pdf-bridge-placeholder";
 }
@@ -41,7 +41,7 @@ function getNvidiaKey() {
   if (!value) throw new Error("NVIDIA_API_KEY is missing on the Render backend.");
   return value;
 }
-function isRetryable(status: number) { return status === 408 || status === 429 || status === 500 || status === 502 || status === 503 || status === 504; }
+function isRetryable(status: number) { return status === 408 || status === 429 || status >= 500; }
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
 async function nvidia(body: any, parentSignal?: AbortSignal) {
@@ -62,7 +62,7 @@ async function nvidia(body: any, parentSignal?: AbortSignal) {
       try { data = raw ? JSON.parse(raw) : {}; } catch { data = { raw }; }
       if (response.ok) return data;
       const message = data?.error?.message || data?.message || data?.detail || `NVIDIA HTTP ${response.status}`;
-      lastError = new Error(`NVIDIA request failed (${response.status}): ${String(message).slice(0, 1200)}`);
+      lastError = new Error(`NVIDIA request failed (${response.status}): ${String(message).slice(0, 1600)}`);
       if (!isRetryable(response.status) || attempt >= MAX_RETRIES) throw lastError;
       const retryAfter = Number(response.headers.get("retry-after") || 0);
       await sleep(retryAfter > 0 ? Math.min(30000, retryAfter * 1000) : Math.min(15000, 800 * 2 ** attempt) + Math.floor(Math.random() * 300));
@@ -87,21 +87,42 @@ function dataFromFilePart(part: any) {
   return marker >= 0 ? raw.slice(marker + 7) : raw;
 }
 
+function buildNativeText(items: any[]) {
+  const rows = new Map<number, Array<{ x: number; text: string }>>();
+  for (const item of items || []) {
+    const text = String(item?.str || "").trim();
+    if (!text) continue;
+    const x = Number(item?.transform?.[4] || 0);
+    const y = Math.round(Number(item?.transform?.[5] || 0) / 3) * 3;
+    const row = rows.get(y) || [];
+    row.push({ x, text });
+    rows.set(y, row);
+  }
+  return [...rows.entries()].sort((a, b) => b[0] - a[0]).map(([, row]) => row.sort((a, b) => a.x - b.x).map(x => x.text).join(" ").trim()).filter(Boolean).join("\n");
+}
+
+async function renderPage(page: any) {
+  const viewport = page.getViewport({ scale: PAGE_SCALE });
+  const canvas: any = createCanvas(Math.ceil(viewport.width), Math.ceil(viewport.height));
+  await page.render({ canvasContext: canvas.getContext("2d"), viewport }).promise;
+  return `data:image/png;base64,${canvas.toBuffer("image/png").toString("base64")}`;
+}
+
 async function pdfPages(base64: string) {
   const pdf = await getDocument({ data: new Uint8Array(Buffer.from(base64, "base64")), disableWorker: true, useSystemFonts: true }).promise;
-  const pages: Array<{ page: number; text: string; image?: string }> = [];
+  const pages: Array<{ page: number; text: string; image?: string; needsOcr: boolean }> = [];
   for (let i = 1; i <= pdf.numPages; i += 1) {
     const page: any = await pdf.getPage(i);
-    const textContent: any = await page.getTextContent();
-    const text = (textContent.items || []).map((item: any) => item?.str || "").join(" ").replace(/\s+/g, " ").trim();
-    if (text.length >= 60) { pages.push({ page: i, text: text.slice(0, PAGE_TEXT_LIMIT) }); continue; }
-    const viewport = page.getViewport({ scale: PAGE_SCALE });
-    const canvas: any = createCanvas(Math.ceil(viewport.width), Math.ceil(viewport.height));
-    await page.render({ canvasContext: canvas.getContext("2d"), viewport }).promise;
-    pages.push({ page: i, text, image: `data:image/png;base64,${canvas.toBuffer("image/png").toString("base64")}` });
+    const textContent: any = await page.getTextContent({ disableCombineTextItems: true });
+    const text = buildNativeText(textContent.items || []).slice(0, PAGE_TEXT_LIMIT);
+    // The old pipeline skipped OCR whenever a page had 60+ characters. That loses tables,
+    // stamps, signatures, embedded scans and form values on otherwise text-bearing pages.
+    const needsOcr = text.length < OCR_TEXT_THRESHOLD;
+    pages.push({ page: i, text, needsOcr });
   }
   return pages;
 }
+
 function responseContent(data: any) {
   const message = data?.choices?.[0]?.message;
   if (!message) return "";
@@ -117,12 +138,13 @@ function extractJson(text: string) {
     throw new Error("NVIDIA returned invalid JSON for the policy analysis.");
   }
 }
+
 async function imageToText(page: { page: number; image?: string }, instruction: string, signal?: AbortSignal) {
   if (!page.image) return "";
   const response = await limit(() => nvidia({
     model: NVIDIA_MODEL,
     messages: [{ role: "user", content: [
-      { type: "text", text: `Transcribe this insurance policy page exactly. Return ONLY the visible document text, preserving policy numbers, dates, amounts, percentages, tables, headings and clauses. Do not summarize and do not invent unreadable text. Page ${page.page}. ${instruction || ""}` },
+      { type: "text", text: `Transcribe this insurance policy page completely. Return ONLY visible document content, preserving every field label, filled value, policy number, date, amount, percentage, table row, heading, clause, checkbox/radio state and endorsement. Do not summarize. If text is unreadable, omit only that text rather than inventing it. Page ${page.page}. ${instruction || ""}` },
       { type: "image_url", image_url: { url: page.image } },
     ] }],
     max_tokens: OCR_MAX_TOKENS, temperature: 0.2, top_k: 1,
@@ -139,20 +161,36 @@ function extractParts(body: any) {
   const text = parts.filter((part: any) => part?.type === "text").map((part: any) => String(part?.text || "")).join("\n");
   return { system, text, fileBase64: dataFromFilePart(file) };
 }
+
 async function handle(body: any, signal?: AbortSignal) {
   const { system, text, fileBase64 } = extractParts(body);
   if (!fileBase64) throw new Error("NVIDIA bridge could not find the uploaded PDF data.");
   const pages = await pdfPages(fileBase64);
-  const imagePages = pages.filter((page) => page.image);
-  const ocrResults = await Promise.allSettled(imagePages.map((page) => imageToText(page, text, signal)));
+  const ocrPages = pages.filter((page) => page.needsOcr);
+  const ocrResults = await Promise.allSettled(ocrPages.map(async (page) => ({ page: page.page, text: await imageToText({ page: page.page, image: await renderPage(await getDocument({ data: new Uint8Array(Buffer.from(fileBase64, "base64")), disableWorker: true, useSystemFonts: true }).promise).then(async (doc) => { const p: any = await doc.getPage(page.page); return p; }) }, text, signal) })));
   const imageTextByPage = new Map<number, string>();
-  ocrResults.forEach((result, index) => {
-    const page = imagePages[index];
-    if (result.status === "fulfilled" && result.value.trim()) imageTextByPage.set(page.page, result.value.trim());
-    else if (result.status === "rejected") console.warn(`NVIDIA OCR failed for PDF page ${page.page}:`, result.reason?.message || result.reason);
+  ocrResults.forEach((result) => {
+    if (result.status === "fulfilled" && result.value.text.trim()) imageTextByPage.set(result.value.page, result.value.text.trim());
+    else if (result.status === "rejected") console.warn("NVIDIA OCR failed for a PDF page:", result.reason?.message || result.reason);
   });
-  const documentText = pages.map((page) => `[PAGE ${page.page}]\n${imageTextByPage.get(page.page) || page.text || ""}`).join("\n\n").slice(0, FINAL_TEXT_LIMIT);
-  const finalPrompt = [text, "", "Analyze the complete insurance policy text below.", "Return ONLY the JSON object required by the system schema.", "Never invent missing values. Use null for missing fields and list them in missingFields.", "List conflicting or uncertain values in uncertainFields.", "Preserve exact policy numbers, names, dates, currency values, limits and percentages.", "", documentText].join("\n");
+  const documentText = pages.map((page) => {
+    const ocr = imageTextByPage.get(page.page);
+    const native = page.text;
+    return `[PAGE ${page.page}]\n${ocr ? `${native}\n[OCR]\n${ocr}` : native || "[No native text extracted]"}`;
+  }).join("\n\n").slice(0, FINAL_TEXT_LIMIT);
+  const finalPrompt = [
+    text,
+    "",
+    "Analyze EVERY page below, not only the first pages.",
+    "Extract every explicit policy fact supported by the document.",
+    "Populate all schema fields when evidence exists. Never invent values; use null when absent.",
+    "additionalDetails MUST contain every important field that does not fit the named top-level fields, including coverage/rider/endorsement/vehicle/benefit/limit/exclusion/payment/claim details. Each item must be {label,value}.",
+    "missingFields must list named schema fields that have no evidence. uncertainFields must list fields with conflicting or ambiguous evidence.",
+    "Preserve exact policy numbers, names, dates, currency values, limits, percentages and clause wording where useful.",
+    "Return ONLY the JSON object required by the system schema.",
+    "",
+    documentText,
+  ].join("\n");
   const finalResponse = await nvidia({
     model: NVIDIA_MODEL,
     messages: [{ role: "system", content: system }, { role: "user", content: finalPrompt }],
@@ -162,7 +200,7 @@ async function handle(body: any, signal?: AbortSignal) {
   const content = responseContent(finalResponse);
   if (!content) throw new Error("NVIDIA returned an empty policy analysis.");
   extractJson(content);
-  return { content, model: NVIDIA_MODEL, usage: finalResponse?.usage || null, pages: pages.length, ocrPages: imagePages.length, ocrSucceeded: imageTextByPage.size };
+  return { content, model: NVIDIA_MODEL, usage: finalResponse?.usage || null, pages: pages.length, ocrPages: ocrPages.length, ocrSucceeded: imageTextByPage.size };
 }
 
 const originalFetch = globalThis.fetch;
