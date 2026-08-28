@@ -2,12 +2,12 @@ import { useEffect, useMemo, useState } from "react";
 
 type Result = Record<string, any>;
 type ItemResult = { id: string; fileName: string; extraction?: Result; error?: string; status: "queued" | "analyzing" | "done" | "error" };
-const fields = [["Policy holder","ownerName"],["Policy number","policyNumber"],["Insurer","providerCompany"],["Policy type","policyType"],["Start date","startDate"],["End date","endDate"],["Premium","premiumAmount"],["Frequency","premiumFrequency"],["Sum assured","sumAssured"],["Insured person","insuredPerson"],["Nominee","nominee"],["Nominee relation","nomineeRelationship"],["Phone","phoneNumber"],["Email","email"],["DOB","dateOfBirth"],["Agent","agentName"],["Branch","branchName"],["Payment mode","paymentMode"],["Maturity","maturityDate"]] as const;
+const fields = [["Policy holder","ownerName"],["Policy number","policyNumber"],["Insurer","providerCompany"],["Policy type","policyType"],["Category","category"],["Start date","startDate"],["End date","endDate"],["Premium","premiumAmount"],["Frequency","premiumFrequency"],["Sum assured","sumAssured"],["Insured person","insuredPerson"],["Nominee","nominee"],["Nominee relation","nomineeRelationship"],["Phone","phoneNumber"],["Email","email"],["Address","address"],["DOB","dateOfBirth"],["Agent","agentName"],["Agent phone","agentPhone"],["Branch","branchName"],["Payment mode","paymentMode"],["Maturity","maturityDate"]] as const;
 const MAX_FILE_BYTES = 100 * 1024 * 1024;
 const ACCEPTED = new Set(["application/pdf", "image/png", "image/jpeg", "image/webp"]);
 const API_BASE = (import.meta.env.VITE_API_BASE_URL || "").trim().replace(/\/$/, "");
 const apiUrl = (path: string) => `${API_BASE}${path}`;
-const instruction = "Extract every policy detail, coverage, premium, nominee, dates, riders, endorsements and important clauses. Never guess missing values.";
+const instruction = "Extract every policy detail, coverage, premium, nominee, dates, riders, endorsements, insured assets, limits, deductibles, exclusions and important clauses. Never guess missing values. Analyze every page.";
 
 function fileToDataUrl(file: File) {
   return new Promise<string>((resolve, reject) => {
@@ -16,6 +16,12 @@ function fileToDataUrl(file: File) {
     r.onerror = () => reject(new Error("Could not read the selected file."));
     r.readAsDataURL(file);
   });
+}
+
+function displayValue(value: any) {
+  if (value === null || value === undefined || String(value).trim() === "") return "Not available";
+  if (typeof value === "object") return JSON.stringify(value);
+  return String(value);
 }
 
 export default function App() {
@@ -83,17 +89,8 @@ export default function App() {
     setBusy(true); setError(""); setSelected(null);
     const startItems = files.map((f, i) => ({ id: `${f.name}-${f.size}-${f.lastModified}-${i}`, fileName: f.name, status: "queued" as const }));
     setItems(startItems);
-
-    // Keep concurrency low for free OpenRouter models. Every file is independent,
-    // so a failed file never prevents the remaining files from producing results.
     let cursor = 0;
-    const worker = async () => {
-      while (true) {
-        const index = cursor++;
-        if (index >= files.length) return;
-        await analyzeOne(files[index], startItems[index].id);
-      }
-    };
+    const worker = async () => { while (true) { const index = cursor++; if (index >= files.length) return; await analyzeOne(files[index], startItems[index].id); } };
     await Promise.all([worker(), worker()]);
     setBusy(false);
   }
@@ -106,7 +103,7 @@ export default function App() {
   return <div className="app">
     <header><div><b>V SHIROYA <span>POLICY AI</span></b><small>Insurance document intelligence & audit</small></div><label className={health?.configured ? "ready" : "notready"}>● {health?.configured ? `AI ready · ${health.configuredKeyCount || 1} key(s)` : health?.backendOffline ? "Backend offline" : "AI key not configured"}</label></header>
     <main>
-      <section className="hero"><div><small>MULTIMODAL POLICY ANALYZER</small><h1>Turn policy documents into <em>actionable intelligence.</em></h1><p>Upload one or many PDFs or policy images. Each uploaded file gets its own independent result.</p></div><aside>{health?.models?.[0] || "OpenRouter"}<small>Active AI model · Free only</small></aside></section>
+      <section className="hero"><div><small>MULTIMODAL POLICY ANALYZER</small><h1>Turn policy documents into <em>actionable intelligence.</em></h1><p>Upload one or many PDFs or policy images. Each uploaded file gets its own independent result.</p></div><aside>{health?.models?.[0] || "NVIDIA / OpenRouter"}<small>Active AI model</small></aside></section>
       <div className="workspace">
         <section className="panel">
           <div className="title"><h2>01 · Upload documents</h2><label>Choose files<input type="file" multiple accept="application/pdf,image/png,image/jpeg,image/webp" onChange={e => choose(e.target.files)} /></label></div>
@@ -120,12 +117,20 @@ export default function App() {
           <div className="title"><h2>02 · Analysis results</h2>{items.length > 0 && <label className="status">{doneCount}/{items.length} complete</label>}</div>
           {items.length > 0 && <div className="result-tabs">{items.map((item, i) => <button type="button" key={item.id} className={active?.id === item.id ? "active" : ""} onClick={() => setSelected(item.id)}>{i + 1}. {item.fileName}{item.status === "done" ? " ✓" : item.status === "error" ? " ✕" : item.status === "analyzing" ? " …" : ""}</button>)}</div>}
           {!active && !busy && <div className="empty"><b>✦</b><h3>Waiting for documents</h3><p>Upload policies and start analysis.</p></div>}
-          {active?.status === "analyzing" && <div className="empty"><b>✦</b><h3>Reading {active.fileName}…</h3><p>OCR, layout analysis and extraction are running.</p></div>}
+          {active?.status === "analyzing" && <div className="empty"><b>✦</b><h3>Reading {active.fileName}…</h3><p>PDF text extraction, page OCR and structured field extraction are running.</p></div>}
           {active?.status === "error" && <div className="error">{active.error || "This document could not be analyzed."}</div>}
-          {result && <div><div className="confidence"><b>{result.confidence ?? 0}%</b><span>AI confidence · {active?.fileName}</span></div><div className="grid">{fields.map(([l,k]) => <div className="field" key={k}><small>{l}</small><strong>{result[k] ?? "Not available"}</strong></div>)}</div>{result.additionalDetails?.length > 0 && <><h3>Additional details</h3>{result.additionalDetails.map((x: any, i: number) => <div className="detail" key={i}><b>{x.label}</b><span>{x.value}</span></div>)}</>}<details><summary>Extracted text</summary><pre>{result.extractedText || "No extracted text returned."}</pre></details></div>}
+          {result && <div>
+            <div className="confidence"><b>{result.confidence ?? 0}%</b><span>AI confidence · {active?.fileName}</span></div>
+            <div className="grid">{fields.map(([l,k]) => <div className="field" key={k}><small>{l}</small><strong>{displayValue(result[k])}</strong></div>)}</div>
+            <h3>Additional details</h3>
+            {Array.isArray(result.additionalDetails) && result.additionalDetails.length > 0 ? result.additionalDetails.map((x: any, i: number) => <div className="detail" key={i}><b>{displayValue(x?.label)}</b><span>{displayValue(x?.value)}</span></div>) : <div className="detail"><b>No additional details extracted</b><span>The document did not provide extra fields outside the named schema, or the model could not verify them.</span></div>}
+            {Array.isArray(result.uncertainFields) && result.uncertainFields.length > 0 && <><h3>Needs verification</h3><div className="detail"><b>Uncertain fields</b><span>{result.uncertainFields.join(", ")}</span></div></>}
+            {Array.isArray(result.missingFields) && result.missingFields.length > 0 && <details><summary>Fields not found in document</summary><pre>{result.missingFields.join("\n")}</pre></details>}
+            <details><summary>Extracted text</summary><pre>{result.extractedText || "No extracted text returned."}</pre></details>
+          </div>}
         </section>
       </div>
     </main>
-    <footer>V Shiroya Policy AI · Server-side OpenRouter analysis · {files.length ? `${doneCount} results for ${files.length} uploads` : "Ready"}</footer>
+    <footer>V Shiroya Policy AI · Server-side multimodal analysis · {files.length ? `${doneCount} results for ${files.length} uploads` : "Ready"}</footer>
   </div>;
 }
