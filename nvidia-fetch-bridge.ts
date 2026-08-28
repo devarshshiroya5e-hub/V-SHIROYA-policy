@@ -5,7 +5,6 @@ import http from "node:http";
 const NVIDIA_URL = "https://integrate.api.nvidia.com/v1/chat/completions";
 const NVIDIA_MODEL = process.env.NVIDIA_MODEL || "nvidia/nemotron-3-nano-omni-30b-a3b-reasoning";
 const PAGE_CONCURRENCY = Math.max(1, Math.min(3, Number(process.env.NVIDIA_PAGE_CONCURRENCY || 2)));
-// 150 DPI is the NVIDIA document example and is materially clearer than the old 1.35x (~97 DPI) render.
 const PAGE_SCALE = Math.max(1.5, Math.min(4.17, Number(process.env.NVIDIA_PDF_SCALE || 2.0833)));
 const PAGE_TEXT_LIMIT = Math.max(4000, Number(process.env.NVIDIA_PAGE_TEXT_LIMIT || 30000));
 const FINAL_TEXT_LIMIT = Math.max(50000, Number(process.env.NVIDIA_FINAL_TEXT_LIMIT || 700000));
@@ -24,9 +23,7 @@ http.createServer = function (...args: any[]) {
   return server;
 } as typeof http.createServer;
 
-if (process.env.NVIDIA_API_KEY && !process.env.OPENROUTER_API_KEY) {
-  process.env.OPENROUTER_API_KEY = "nvidia-pdf-bridge-placeholder";
-}
+if (process.env.NVIDIA_API_KEY && !process.env.OPENROUTER_API_KEY) process.env.OPENROUTER_API_KEY = "nvidia-pdf-bridge-placeholder";
 
 const nativeFetch = globalThis.fetch.bind(globalThis);
 let active = 0;
@@ -115,10 +112,11 @@ async function pdfPages(base64: string) {
     const page: any = await pdf.getPage(i);
     const textContent: any = await page.getTextContent({ disableCombineTextItems: true });
     const text = buildNativeText(textContent.items || []).slice(0, PAGE_TEXT_LIMIT);
-    // The old pipeline skipped OCR whenever a page had 60+ characters. That loses tables,
-    // stamps, signatures, embedded scans and form values on otherwise text-bearing pages.
     const needsOcr = text.length < OCR_TEXT_THRESHOLD;
-    pages.push({ page: i, text, needsOcr });
+    // Render only sparse pages. This preserves native text for text-heavy pages while
+    // recovering values in scanned pages, tables, stamps, signatures and form widgets.
+    const image = needsOcr ? await renderPage(page) : undefined;
+    pages.push({ page: i, text, image, needsOcr });
   }
   return pages;
 }
@@ -167,7 +165,7 @@ async function handle(body: any, signal?: AbortSignal) {
   if (!fileBase64) throw new Error("NVIDIA bridge could not find the uploaded PDF data.");
   const pages = await pdfPages(fileBase64);
   const ocrPages = pages.filter((page) => page.needsOcr);
-  const ocrResults = await Promise.allSettled(ocrPages.map(async (page) => ({ page: page.page, text: await imageToText({ page: page.page, image: await renderPage(await getDocument({ data: new Uint8Array(Buffer.from(fileBase64, "base64")), disableWorker: true, useSystemFonts: true }).promise).then(async (doc) => { const p: any = await doc.getPage(page.page); return p; }) }, text, signal) })));
+  const ocrResults = await Promise.allSettled(ocrPages.map(async (page) => ({ page: page.page, text: await imageToText(page, text, signal) })));
   const imageTextByPage = new Map<number, string>();
   ocrResults.forEach((result) => {
     if (result.status === "fulfilled" && result.value.text.trim()) imageTextByPage.set(result.value.page, result.value.text.trim());
@@ -184,7 +182,7 @@ async function handle(body: any, signal?: AbortSignal) {
     "Analyze EVERY page below, not only the first pages.",
     "Extract every explicit policy fact supported by the document.",
     "Populate all schema fields when evidence exists. Never invent values; use null when absent.",
-    "additionalDetails MUST contain every important field that does not fit the named top-level fields, including coverage/rider/endorsement/vehicle/benefit/limit/exclusion/payment/claim details. Each item must be {label,value}.",
+    "additionalDetails MUST contain every important field that does not fit the named top-level fields, including coverage, insured objects, riders, endorsements, deductibles, limits, benefits, exclusions, payment details, claim details and important clauses. Each item MUST be {label,value}.",
     "missingFields must list named schema fields that have no evidence. uncertainFields must list fields with conflicting or ambiguous evidence.",
     "Preserve exact policy numbers, names, dates, currency values, limits, percentages and clause wording where useful.",
     "Return ONLY the JSON object required by the system schema.",
