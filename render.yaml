@@ -13,17 +13,19 @@ services:
       - key: NVIDIA_PAGE_CONCURRENCY
         value: "2"
       - key: NVIDIA_PDF_SCALE
-        value: "1.35"
+        value: "2.0833"
+      - key: NVIDIA_OCR_TEXT_THRESHOLD
+        value: "500"
       - key: NVIDIA_PAGE_TEXT_LIMIT
-        value: "18000"
+        value: "30000"
       - key: NVIDIA_FINAL_TEXT_LIMIT
-        value: "180000"
+        value: "700000"
       - key: NVIDIA_OCR_MAX_TOKENS
-        value: "4096"
+        value: "8192"
       - key: NVIDIA_MAX_TOKENS
-        value: "6000"
+        value: "10000"
       - key: NVIDIA_TIMEOUT_MS
-        value: "90000"
+        value: "120000"
       - key: NVIDIA_MAX_RETRIES
         value: "3"
       - key: OPENROUTER_API_KEY
