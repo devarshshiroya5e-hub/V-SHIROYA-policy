@@ -10,24 +10,32 @@ services:
         sync: false
       - key: NVIDIA_MODEL
         value: nvidia/nemotron-3-nano-omni-30b-a3b-reasoning
+      - key: NVIDIA_OCR_MODEL
+        value: nvidia/nemotron-3-nano-omni-30b-a3b-reasoning
+      - key: NVIDIA_FINAL_MODEL
+        value: nvidia/nemotron-3.5-lightning-30b-a3b
       - key: NVIDIA_PAGE_CONCURRENCY
-        value: "2"
+        value: "3"
       - key: NVIDIA_PDF_SCALE
-        value: "2.0833"
+        value: "1.75"
       - key: NVIDIA_OCR_TEXT_THRESHOLD
         value: "500"
       - key: NVIDIA_PAGE_TEXT_LIMIT
-        value: "30000"
+        value: "24000"
       - key: NVIDIA_FINAL_TEXT_LIMIT
-        value: "700000"
+        value: "500000"
       - key: NVIDIA_OCR_MAX_TOKENS
-        value: "8192"
+        value: "4096"
       - key: NVIDIA_MAX_TOKENS
-        value: "10000"
+        value: "7000"
       - key: NVIDIA_TIMEOUT_MS
-        value: "120000"
+        value: "90000"
       - key: NVIDIA_MAX_RETRIES
-        value: "3"
+        value: "2"
+      - key: AI_CACHE_TTL_MS
+        value: "1800000"
+      - key: AI_CACHE_MAX_ENTRIES
+        value: "20"
       - key: OPENROUTER_API_KEY
         sync: false
       - key: OPENROUTER_ALLOW_PAID
