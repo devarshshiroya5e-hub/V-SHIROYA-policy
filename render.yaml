@@ -15,7 +15,7 @@ services:
       - key: NVIDIA_FINAL_MODEL
         value: nvidia/nemotron-3.5-lightning-30b-a3b
       - key: NVIDIA_PAGE_CONCURRENCY
-        value: "3"
+        value: "2"
       - key: NVIDIA_PDF_SCALE
         value: "1.75"
       - key: NVIDIA_OCR_TEXT_THRESHOLD
@@ -31,9 +31,9 @@ services:
       - key: NVIDIA_RECOVERY_MAX_TOKENS
         value: "5000"
       - key: NVIDIA_TIMEOUT_MS
-        value: "90000"
+        value: "120000"
       - key: NVIDIA_MAX_RETRIES
-        value: "2"
+        value: "3"
       - key: AI_CACHE_TTL_MS
         value: "1800000"
       - key: AI_CACHE_MAX_ENTRIES
