@@ -19,15 +19,17 @@ services:
       - key: NVIDIA_PDF_SCALE
         value: "1.75"
       - key: NVIDIA_OCR_TEXT_THRESHOLD
-        value: "500"
+        value: "650"
       - key: NVIDIA_PAGE_TEXT_LIMIT
-        value: "24000"
+        value: "60000"
       - key: NVIDIA_FINAL_TEXT_LIMIT
-        value: "500000"
+        value: "900000"
       - key: NVIDIA_OCR_MAX_TOKENS
         value: "4096"
       - key: NVIDIA_MAX_TOKENS
-        value: "7000"
+        value: "9000"
+      - key: NVIDIA_RECOVERY_MAX_TOKENS
+        value: "5000"
       - key: NVIDIA_TIMEOUT_MS
         value: "90000"
       - key: NVIDIA_MAX_RETRIES
